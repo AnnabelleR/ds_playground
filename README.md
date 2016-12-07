@@ -1,2 +1,3 @@
-# Data Science Playground
+# DS Playground
 
+Short data science projects using publicly available datasets

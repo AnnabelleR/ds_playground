@@ -1,0 +1,770 @@
+---
+output: html_document
+---
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#rm(list=ls())
+#cat("\014")
+
+options(scipen=999)
+
+## Loading Libraries
+library(ggplot2)
+library(scales)
+library(reshape2)
+library(lubridate)
+library(dplyr)
+library(doBy)
+library(data.table)
+library(corrplot)
+library(zoo)
+library(Amelia)
+library(caret)
+library(pscl)
+library(psych)
+library(leaflet)
+library(shiny)
+library(ggrepel)
+library(gtable)
+library(grid)
+
+## Functions
+factor_to_numeric <- function(x) {
+  return (as.numeric(as.character(x)))
+}
+
+length_unique <- function(x) {
+  return (length(unique(x)))
+}
+
+give.n <- function(x){
+  return(c(y = mean(x), label = length(x)))
+}
+
+nice_time <- function(x) {
+  return (strptime(x, "%d%b%Y"))
+}
+
+nice_time2 <- function(x) {
+  return (strptime(x, "%Y-%m-%d"))
+}
+
+to_date <- function(x) {
+  return (as.Date(x, origin="1970-01-01"))
+}
+
+my_min <- function(x) {
+  return (min(x, na.rm = TRUE))
+}
+
+range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+
+percent <- function(x, digits = 2, format = "f", ...) {
+  paste0(formatC(100 * x, format = format, digits = digits, ...), "%")
+}
+
+setwd('/Users/annabelle/Documents/kaggle/airports/')
+
+airports_data <- read.csv("./airportsnew2.csv")
+names(airports_data) <- c("iata","airport_name","airport_city","state","country","lat","long")
+
+carriers_data <- read.csv("./carriers.csv")
+carriers_data <- carriers_data[!apply(carriers_data == "", 1, all),]
+names(carriers_data)[2] <- "carrier_name"
+
+delays_by_time <- read.csv("./intermediate_data_sets/delays_by_time.csv",row.names = 1)
+delays_by_month <- read.csv(file = "./intermediate_data_sets/delays_by_month.csv",row.names = 1)
+delays_by_month$FlightYEAR <- as.factor(delays_by_month$FlightYEAR)
+
+flights_airport_dep <- read.csv("./intermediate_data_sets/flights_airport_dep.csv",row.names = 1)
+delays_by_airport_dep <- read.csv("./intermediate_data_sets/delays_by_airport_dep.csv",row.names = 1)
+delays_types_by_dep_airport_prop <- read.csv("./intermediate_data_sets/delays_types_by_dep_airport_prop.csv",row.names = 1)
+
+delays_by_path <- read.csv("./intermediate_data_sets/delays_by_path.csv",row.names = 1)
+
+delays_by_path_carr <- read.csv("./intermediate_data_sets/delays_by_path_carr.csv",row.names = 1)
+delays_by_path_carr_spirit <- subset(delays_by_path_carr,UniqueCarrier == "NK")
+
+delays_types_by_path_carr_prop <- read.csv("./intermediate_data_sets/delays_types_by_path_carr_prop.csv",row.names = 1)
+
+delays_by_carrier <- read.csv("./intermediate_data_sets/delays_by_carrier.csv",row.names = 1)
+
+flights_cancelled_by_carrier <- read.csv(file = "./intermediate_data_sets/flights_cancelled_by_carrier.csv",row.names = 1)
+
+flights_by_month_carrier <- read.csv(file = "./intermediate_data_sets/flights_by_month_carrier.csv",row.names = 1)
+
+delays_types_by_carrier_prop <- read.csv("./intermediate_data_sets/delays_types_by_carrier_prop.csv",row.names = 1)
+delays_types_by_carrier_prop_long <- melt(delays_types_by_carrier_prop[,c(2:7)],id="carrier_name")
+
+delays_by_carrier_time <- read.csv("./intermediate_data_sets/delays_by_carrier_time.csv",row.names = 1)
+
+flights_paths <- read.csv("./intermediate_data_sets/flights_paths.csv",row.names = 1)
+
+flights_paths_carr <- read.csv(file = "./intermediate_data_sets/flights_paths_carr.csv",row.names = 1)
+
+```
+
+# Will I Get There on Time? An Analysis of Air Traffic Delays in the US
+
+
+The aim of this analysis is to highlight some interesting trends in the air traffic delays in the United States and to help us understand better why a carrier like Spirit Airlines underperforms consistently when it comes to delays. 
+
+The data used in this analysis comes from the Bureau of Transportation Statistics ([BTS](http://www.transtats.bts.gov/DL_SelectFields.asp?Table_ID=236&DB_Short_Name=On-Time)) which publishes monthly reports for carriers that have at least 1 percent of the total domestic passenger flights revenue. The time period covered by this report is January 2014 to June 2016 and the corresponding dataset contains `r prettyNum(sum(delays_by_carrier$flights_count),big.mark=",",scientific=FALSE)` flights operated by `r length_unique(delays_by_carrier$UniqueCarrier)` airlines. 
+
+We will start by looking at when and where air traffic delays occured during this period. We will then analyse the breakdown of delays by airline before focusing on Spirit Airlines, which was the worst performing airline during the period.
+
+
+When Do Delays Occur?
+---------------------
+
+We will start by looking at when air traffic delays are more likely to occur. Unless stated otherwise, in this report a delayed flight corresponds to a flight which had a delay 15 minutes or more at arrival. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+plot_delays_by_month <- ggplot(data=delays_by_month,
+                             aes(x=FlightMONTH, y=prop_arr_delayed, group=FlightYEAR)) +
+                        geom_line(aes(colour = FlightYEAR, alpha=flights_count), size = 1) +
+                        xlab("") + ylab("% Flights Delayed") + ggtitle("% Flights Delayed") +
+                        labs(alpha='Flights Count') + 
+                        scale_y_continuous(labels = percent) +
+                        scale_x_continuous(breaks=1:12)  +
+                        theme(legend.position="bottom",
+                              panel.background = element_rect(colour = "black", fill="white"),
+                              panel.grid.major = element_line(colour = "lightgrey"),
+                              panel.grid.minor = element_line(colour = "lightgrey"),
+                              text = element_text(size=16),
+                              axis.text.x = element_text(size=10),
+                              axis.text.y = element_text(size=10),
+                              legend.text = element_text(size=10),
+                              legend.justification = "left") +
+                        scale_colour_manual(values = c("#66c2a5", '#fc8d62', "#8da0cb"), 
+                                          labels = c("2014", "2015", "2016"), name="Year")
+
+delays_by_time_long <- melt(delays_by_time[,c("FlightHOUR","FlightDOW","prop_arr_delayed")],id=c("FlightDOW","FlightHOUR"))
+
+delays_by_time_long$FlightDOW <- factor(delays_by_time_long$FlightDOW, 
+                                        levels = c("Mon","Tues","Wed","Thurs","Fri","Sat","Sun"))
+names(delays_by_time_long)[1] <- "Weekday"
+names(delays_by_time_long)[4] <- "prop_arr_delayed"
+
+delays_by_time_long2 <- melt(delays_by_time[,c("FlightHOUR","FlightDOW","flights_count")],id=c("FlightDOW","FlightHOUR"))
+
+delays_by_time_long2$FlightDOW <- factor(delays_by_time_long2$FlightDOW, 
+                                         levels = c("Mon","Tues","Wed","Thurs","Fri","Sat","Sun"))
+names(delays_by_time_long2)[1] <- "Weekday"
+names(delays_by_time_long2)[4] <- "flights_count"
+
+plot_flights_by_hour <-  ggplot(data=delays_by_time_long2,
+                             aes(x=FlightHOUR, y=flights_count, group=Weekday)) +
+                        geom_line(aes(colour = Weekday), size = 1,alpha=0.8) +
+                        xlab("") + ylab("Flights") + ggtitle("Flights by Hour") +
+                        scale_y_continuous(labels = comma) +
+                        scale_x_continuous(breaks=0:23)  +
+                        theme(legend.position="right",
+                              panel.background = element_rect(colour = "black", fill="white"),
+                              panel.grid.major = element_line(colour = "lightgrey"),
+                              panel.grid.minor = element_line(colour = "lightgrey"),
+                              text = element_text(size=16),
+                              axis.text.x = element_text(size=10),
+                              axis.text.y = element_text(size=10),
+                              legend.text = element_text(size=10),
+                              legend.justification = "left") + 
+  scale_colour_manual(values = c("#66c2a5","#fc8d62", "#8da0cb", "#e78ac3", "#a6d854","#cab2d6","#6a3d9a"), name="Weekday")
+
+delays_by_time_long_final <- merge(x=delays_by_time_long,y=delays_by_time_long2[,c(1,2,4)],by=c("Weekday", "FlightHOUR"))
+
+
+plot_delays_by_hour <- ggplot(data=delays_by_time_long_final,
+                        aes(x=FlightHOUR, y=prop_arr_delayed, group=Weekday, alpha=flights_count)) +
+                        geom_line(aes(colour = Weekday), size = 1) +
+                        labs(alpha='Flights Count') +
+                       xlab("Hour") + ylab("% Flights Delayed") + ggtitle("% Flights Delayed") +
+                       scale_y_continuous(labels = percent) +
+                       scale_x_continuous(breaks=0:23)  +
+                       theme(legend.position="right",
+                            panel.background = element_rect(colour = "black", fill="white"),
+                            panel.grid.major = element_line(colour = "lightgrey"),
+                            panel.grid.minor = element_line(colour = "lightgrey"),
+                            text = element_text(size=16),
+                            axis.text.x = element_text(size=10),
+                            axis.text.y = element_text(size=10),
+                            legend.text = element_text(size=10),
+                            legend.justification = "left") + 
+  scale_colour_manual(values = c("#66c2a5","#fc8d62", "#8da0cb", "#e78ac3", "#a6d854","#cab2d6","#6a3d9a"), name="Weekday")
+
+```
+
+As it can be seen from the chart below, there has been a decrease in the proportion of monthly delayed flights since 2014 and airlines seem to be working on their on-time performance. The color intensity corresponds to the total number of flights that were scheduled in the corresponding month and some clear monthly trends can be observed:
+
+* The percentage of flights delayed is peaking in June, when there is a high volume of flights (probably related to the start of the summer holidays)
+* There is an improvement during Spring and fall, when the air traffic activity is slightly lower
+* Another peak can be observed in December 
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_delays_by_month
+```
+
+If we break down the volume of flights by departure hour and day of the week, two peaks can be observed on weekdays: a morning peak at 6AM and a late afternoon peak at 5PM. The volume of flight stays quite constant between the two peaks. As expected, the volume of flights is lower in the early morning and late nights hours. Some similar patterns can be observed on weekends but the volumes of flights are lower on Saturdays and on Sunday mornings, when people might be less willing to travel. 
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_flights_by_hour 
+```
+
+When plotting the percentage of delayed flights by departure hour and weekday, a clear trend can be observed: evening flights tend to be more often delayed than morning flights. The percentage of delayed flights peaks around 8pm and starts decreasing after that. Saturday afternoons and evenings tend to have lower percentages of delayed flights. These trends might be explained by the fact that the flights contained in this dataset are national flights and airlines, especially low-cost ones, might have high levels of daily aircraft utilization. Delays can therefore accumulate thorough the day.
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_delays_by_hour
+```
+
+Where Do Delays Occur?
+----------------------
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+major_airports <- subset(flights_airport_dep, flights_count > 75000)[3]
+major_airports$airport_name_origin <- as.character(major_airports$airport_name_origin)
+major_airports <- major_airports[1][[1]]
+
+delays_types_by_dep_airport_prop_long <- melt(delays_types_by_dep_airport_prop[,c(3:6)],id="airport_name_origin")
+
+plot_reasons_for_delays <- ggplot(data=subset(delays_types_by_dep_airport_prop_long, airport_name_origin %in% major_airports),
+                                 aes(x=airport_name_origin, y=value, group=variable)) +
+                            geom_bar(aes(fill = variable), colour = "grey", stat="identity", position=position_dodge()) +
+                            xlab("") + ylab("% Total Delays") + ggtitle("Reasons for Delays") +
+                            scale_y_continuous(labels = percent) +
+                            theme(legend.position="bottom",
+                                  panel.background = element_rect(colour = "black", fill="white"),
+                                  panel.grid.major = element_line(colour = "lightgrey"),
+                                  panel.grid.minor = element_line(colour = "lightgrey"),
+                                  text = element_text(size=16),
+                                  axis.text.x = element_text(angle = 60, hjust = 1, size=10),
+                                  axis.text.y = element_text(size=10),
+                                  legend.text = element_text(size=10),
+                                  legend.justification = "left") +
+                            scale_fill_manual(values = c("#66c2a5", '#fc8d62', "#8da0cb"), 
+                                              labels = c("Weather", "NAS", "Security"), name="Reason")
+
+dep_aiport_map <- merge(x=delays_by_airport_dep,y=airports_data[,c(1,6,7)],by.x="Origin",by.y="iata")
+dep_aiport_map <- subset(dep_aiport_map, flights_count > 1000)
+dep_aiport_map$flights_count_scaled <- (range01(dep_aiport_map$flights_count) * 10) + 2
+dep_aiport_map$prop_dep_delayed_1H_perc <- percent(dep_aiport_map$prop_dep_delayed_1H)
+dep_aiport_map$prop_dep_delayed_perc <- percent(dep_aiport_map$prop_dep_delayed)
+
+delays_by_airport_dep$airport_name_origin <- factor(delays_by_airport_dep$airport_name_origin, 
+                                                    levels = delays_by_airport_dep$airport_name_origin[order(-delays_by_airport_dep$prop_dep_delayed)])
+
+p1 <- ggplot(data=subset(delays_by_airport_dep, flights_count > 75000),
+             aes(x=airport_name_origin, y=prop_dep_delayed,order = desc(prop_dep_delayed))) +
+  xlab("") + ylab("") + ggtitle("% Flights Delayed and Average Delay (min)") +
+  geom_bar(fill = "#336699", colour = "#336699", stat="identity", position=position_dodge()) +
+  scale_y_continuous(labels = percent) +
+  theme(legend.position="right",
+        panel.background = element_rect(colour = "black", fill="white"),
+        panel.grid.major = element_line(colour = "lightgrey"),
+        panel.grid.minor = element_line(colour = "lightgrey"),
+        text = element_text(size=16),
+        axis.text.x = element_text(angle = 65, hjust = 1, size=10),
+        axis.text.y = element_text(size=10),
+        legend.text = element_text(size=12),
+        legend.justification = "left")
+
+p2 <- ggplot(data=subset(delays_by_airport_dep, flights_count > 75000),
+             aes(x=airport_name_origin, y=avg_delay, group=1)) +
+  geom_line(colour = "red", size=1) + theme_bw() %+replace% 
+  theme(panel.background = element_blank(),
+      panel.grid.minor = element_blank(), 
+      panel.grid.major = element_blank())
+
+g1 <- ggplot_gtable(ggplot_build(p1))
+g2 <- ggplot_gtable(ggplot_build(p2))
+
+pp <- c(subset(g1$layout, name == "panel", se = t:r))
+g <- gtable_add_grob(g1, g2$grobs[[which(g2$layout$name == "panel")]], pp$t, 
+                     pp$l, pp$b, pp$l)
+
+ia <- which(g2$layout$name == "axis-l")
+ga <- g2$grobs[[ia]]
+ax <- ga$children[[2]]
+ax$widths <- rev(ax$widths)
+ax$grobs <- rev(ax$grobs)
+ax$grobs[[1]]$x <- ax$grobs[[1]]$x - unit(1, "npc") + unit(0.15, "cm")
+g <- gtable_add_cols(g, g2$widths[g2$layout[ia, ]$l], length(g$widths) - 1)
+g <- gtable_add_grob(g, ax, pp$t, length(g$widths) - 1, pp$b)
+
+plot_dep_airp_flights_delays <- ggplot(data=dep_aiport_map,
+                                     aes(x=prop_dep_delayed, y=flights_count)) +
+                                geom_point(aes(size = avg_delay, colour = -avg_delay)) +
+                                xlab("% Delayed") + ylab("Flights") + ggtitle("Flights Count vs % Flights Delayed") +
+                                scale_y_continuous(labels = comma) +
+                                scale_x_continuous(labels = percent, limits = c(0:1/3)) +
+                                guides(colour=FALSE) + 
+                                theme(legend.position="bottom",
+                                      panel.background = element_rect(colour = "black", fill="white"),
+                                      panel.grid.major = element_line(colour = "lightgrey"),
+                                      panel.grid.minor = element_line(colour = "lightgrey"),
+                                      text = element_text(size=16),
+                                      axis.text.x = element_text(size=10),
+                                      axis.text.y = element_text(size=10),
+                                      legend.text = element_text(size=10),
+                                      legend.justification = "left") + labs(size='Average Delay (min)')
+
+#cor(dep_aiport_map[,c("flights_count","avg_delay","prop_dep_delayed")]) 
+
+```
+
+We can now look at the areas where delays are more likely to occur. Airports are not equal when it comes to departure delays. The below map shows the total number of flight and the percentage of flights delayed for each significant airport in the US (having more than 1,000 flights during the period studied). The map is interactive and you can click on any airport to get the corresponding statistics. 
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+pal <- colorNumeric(
+  palette = "Reds",
+  domain = dep_aiport_map$prop_dep_delayed
+)
+
+leaflet() %>% addProviderTiles("CartoDB.Positron",options = c(providerTileOptions(opacity = 0.8),tileOptions(minZoom=2, maxZoom=10))) %>%
+  setView(lng = -95, lat = 40,  zoom = 4) %>% 
+  addCircleMarkers(
+    data = dep_aiport_map,
+    ~long, 
+    ~lat, 
+    radius = ~dep_aiport_map$flights_count_scaled,
+    color = ~pal(dep_aiport_map$prop_dep_delayed),
+    stroke = FALSE, fillOpacity = 0.8,
+    popup=paste(strong("Airport:"), dep_aiport_map$airport_name_origin, "<br>", 
+                strong("Total Flights:"), prettyNum(dep_aiport_map$flights_count,big.mark=",",scientific=FALSE), "<br>",
+                strong("Average Delay (mn):"), round(dep_aiport_map$avg_delay,1), "<br>",
+                strong("Flight Delayed:"), dep_aiport_map$prop_dep_delayed_perc, "<br>",
+                strong("Flight Delayed for more than 1h:"), dep_aiport_map$prop_dep_delayed_1H_perc)
+  ) %>%
+  addLegend("bottomright", pal = pal, values = dep_aiport_map$prop_dep_delayed,
+            title = "% Flights Delayed",
+            opacity = 1, labFormat = labelFormat(
+              prefix = '', suffix = '%', between = ', ',
+              transform = function(x) 100 * x
+            )) 
+```
+
+The below chart shows the worst performers in terms of delayed flights among the major airports (having more than 75,000 flights during the period), along with the average delay in minutes (in red). The Chicago Midway airport is the worst performer in terms of percentage of delayed flights (26%, with an average delay of 39 minutes). William P Hobby airport in Houston was the second worst (25%, with an average delay of 38 minutes), followed by Chicago O'Hare International (24.5%, with an average delay of 44 minutes). In contrast the best major airport was Honolulu International airport, with only 8% of flights delayed and an average delay of 15 minutes.
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+#subset(delays_by_airport_dep, airport_name_origin == "Chicago O'Hare International")
+grid.draw(g)
+```
+
+If we plot the total number of flights versus the percentage of flights delayed for each airport, we can see that some of the biggest airports in terms of flights tend to be also the ones that have the highest percentage of delayed flights. Furthermore there is a strong correlation between the percentage of delayed flights and the average delay in minutes (the correlation coefficient is 0.83 between the two variables).
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_dep_airp_flights_delays
+```
+
+We can look at the delay reasons to understand why some airports underperform. The Air Carrier On-Time Reporting Advisory Committee created five broad categories to report the causes of delays which are: 
+
+* **Air Carrier:** The cause of the cancellation or delay was due to circumstances within the airline's control (e.g. maintenance or crew problems, aircraft cleaning, baggage loading, fueling, etc.).
+* **Extreme Weather:** Significant meteorological conditions (actual or forecasted) that, in the judgment of the carrier, delays or prevents the operation of a flight such as tornado, blizzard or hurricane.
+* **National Aviation System (NAS):** Delays and cancellations attributable to the national aviation system that refer to a broad set of conditions, such as non-extreme weather conditions, airport operations, heavy traffic volume, and air traffic control.
+* **Late-arriving aircraft:** A previous flight with same aircraft arrived late, causing the present flight to depart late.
+* **Security:** Delays or cancellations caused by evacuation of a terminal or concourse, re-boarding of aircraft because of security breach, inoperative screening equipment and/or long lines in excess of 29 minutes at screening areas.
+
+At the airport level, we will remove the delay reasons which are the responsibility of the airlines (air carrier and late-arriving aircraft). NAS, which is a broad category, was the reason for most delays in all the major airports. It is however interesting to observe that in the case of the Chicago Midway airport 24% of delays were related to extreme weather conditions, which is higher than the average for major airports (15% of delays caused by extreme weather conditions). The percentage of extreme weather related delays was similar for William P Hobby and Chicago O'Hare International. Houston and Chicago, due to their geographic locations, might suffer from some occasional extreme weather conditions which might prevent their airports from operating correctly.    
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_reasons_for_delays
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+delays_by_path$path <- factor(delays_by_path$path, 
+                              levels = delays_by_path$path[order(-delays_by_path$prop_dep_delayed)])
+
+plot_delayed_path <- ggplot(data=subset(delays_by_path, flights_count > 20000),
+                           aes(x=path, y=prop_dep_delayed,order = desc(prop_dep_delayed))) +
+                      geom_bar(fill = "#336699", colour = "grey", stat="identity", position=position_dodge()) +
+                      xlab("Hour") + ylab("% Flights Delayed") + ggtitle("% Flights Delayed by Major Path") +
+                      scale_y_continuous(labels = percent) +
+                      theme(legend.position="right",
+                            panel.background = element_rect(colour = "black", fill="white"),
+                            panel.grid.major = element_line(colour = "lightgrey"),
+                            panel.grid.minor = element_line(colour = "lightgrey"),
+                            text = element_text(size=16),
+                            axis.text.x = element_text(angle = 60, hjust = 1, size=10),
+                            axis.text.y = element_text(size=10),
+                            legend.text = element_text(size=12),
+                            legend.justification = "left")
+
+delays_by_path_carr$carrier_name <- factor(delays_by_path_carr$carrier_name, 
+                                        levels = delays_by_path_carr$carrier_name[order(-delays_by_path_carr$prop_dep_delayed)])
+
+plot_delayed_path_carr <- ggplot(data=subset(delays_by_path_carr, path == "LAS-SFO"),
+                               aes(x=carrier_name, y=prop_dep_delayed,order = desc(prop_dep_delayed))) +
+                          geom_bar(fill = "#336699", colour = "grey", stat="identity", position=position_dodge()) +
+                          xlab("") + ylab("Flights Delayed (%)") + ggtitle("% Flights Delayed - McCarran Int. to San Francisco Int.") +
+                          scale_y_continuous(labels = percent) +
+                          theme(legend.position="right",
+                                panel.background = element_rect(colour = "black", fill="white"),
+                                panel.grid.major = element_line(colour = "lightgrey"),
+                                panel.grid.minor = element_line(colour = "lightgrey"),
+                                text = element_text(size=16),
+                                axis.text.x = element_text(size=8),
+                                axis.text.y = element_text(size=10),
+                                legend.text = element_text(size=12),
+                                legend.justification = "left")
+
+delays_types_by_path_carr_prop_long <- melt(delays_types_by_path_carr_prop[,c(2,7:11,14,15)],id=c("path_carr","path","carrier_name"))
+
+plot_delayed_path_carr_reasons <-  ggplot(data=subset(delays_types_by_path_carr_prop_long,path=="LAS-SFO"),
+                                 aes(x=carrier_name, y=value, group=variable)) +
+                            geom_bar(aes(fill = variable), colour = "grey", stat="identity", position=position_dodge()) +
+                            xlab("") + ylab("% Total Delays") + ggtitle("Reasons for Delays - McCarran Int. to San Francisco Int.") +
+                            scale_y_continuous(labels = percent) +
+                            theme(legend.position="bottom",
+                                  panel.background = element_rect(colour = "black", fill="white"),
+                                  panel.grid.major = element_line(colour = "lightgrey"),
+                                  panel.grid.minor = element_line(colour = "lightgrey"),
+                                  text = element_text(size=16),
+                                  axis.text.x = element_text(size=8),
+                                  axis.text.y = element_text(size=10),
+                                  legend.text = element_text(size=12),
+                                  legend.justification = "left") +
+                            scale_fill_manual(values = c("#66c2a5", '#fc8d62', "#8da0cb", "#4daf4a", "#e78ac3"), 
+                                              labels = c("Carrier", "Weather", "NAS", "Security", "Late Aircraft"), name="Reason")
+
+```
+
+We can also look at delays by flight route for major routes that had more than 20,000 flights during the period analysed. The flight route with the highest percentage of delayed flights was the McCarran International - Las Vegas to San Francisco International route (28% of flight delayed) with 10% of flights delayed by more than one hour and an average delay of 50 minutes. The Chicago O'Hare International to Los Angeles International was the second mast most delayed major route (27% of flights delayed with an average delay of 43 minutes) and the Los Angeles International to San Francisco International route the third one (26% of flights delayed wit an average delay of 44 minutes). In contrast, the least delayed major route was the Honolulu International to Kahului flight, which was only delayed 5% of the time and with an average delay of only 5 minutes! The departure and arrival airports seem to influence the probability of a flight being on time. 
+
+```{r, echo=FALSE, fig.width=8, fig.height=6, warning=FALSE}
+#subset(delays_by_path, prop_dep_delayed == min(subset(delays_by_path,flights_count > 20000)$prop_dep_delayed))
+plot_delayed_path
+```
+
+Some routes might have a higher proportion of low costs airlines operating, which can explain the high overall proportion of delays. We can look at the performance of the different airlines operating a same route. We will take the McCarran International to San Francisco International route as an example. On this route Southwest Airlines, the world's largest low-cost carrier, had the worst performance (37% of flights delayed with an average delay of 59 minutes) and United Airlines the best (23% of flights delayed with an average delay of 42 minutes), which is not great either.  
+
+```{r, echo=FALSE, fig.width=8, fig.height=6, warning=FALSE}
+plot_delayed_path_carr
+```
+
+A late aircraft was the reason of the delay for Southwest Airlines in 42% of the cases, a NAS delay in 29% of the cases, a carrier delay in 21% of the cases and an extreme weather related delay in 8% of the cases.
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_delayed_path_carr_reasons
+```
+
+Which Airlines Have the Most Delayed Flights?
+---------------------------------------------
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+plot_delays_flights <- ggplot(data=delays_by_carrier,
+                           aes(x=prop_arr_delayed, y=flights_count)) +
+                      geom_point(aes(colour = carrier_name), size = 3) +
+                      xlab("% Delayed") + ylab("Flights") + ggtitle("Flights Count vs % Flights Delayed") +
+                      scale_y_continuous(labels = comma) +
+                      scale_x_continuous(labels = percent, limits = c(0:1/3)) +
+                      theme(legend.position="right",
+                            panel.background = element_rect(colour = "black", fill="white"),
+                            panel.grid.major = element_line(colour = "lightgrey"),
+                            panel.grid.minor = element_line(colour = "lightgrey"),
+                            text = element_text(size=16),
+                            axis.text.x = element_text(size=10),
+                            axis.text.y = element_text(size=10),
+                            legend.text = element_text(size=10),
+                            legend.justification = "left") + 
+                      geom_text_repel(aes(label=carrier_name,colour=carrier_name)) +
+                      guides(colour=FALSE)
+
+delays_by_carrier_types_long <- melt(delays_by_carrier[,c("carrier_name","prop_arr_delayed","prop_arr_delayed_1H")])
+
+plot_delays_by_carrier_types <- ggplot(data=delays_by_carrier_types_long,
+                                 aes(x=carrier_name, y=value, group=variable)) +
+                            geom_bar(aes(fill = variable), colour = "grey", stat="identity", position=position_dodge()) +
+                            xlab("") + ylab("% Flights Delayed") + ggtitle("% Flights Delayed") +
+                            scale_y_continuous(labels = percent) +
+                            theme(legend.position="bottom",
+                                  panel.background = element_rect(colour = "black", fill="white"),
+                                  panel.grid.major = element_line(colour = "lightgrey"),
+                                  panel.grid.minor = element_line(colour = "lightgrey"),
+                                  text = element_text(size=16),
+                                  axis.text.x = element_text(angle = 60, hjust = 1, size=10),
+                                  axis.text.y = element_text(size=10),
+                                  legend.text = element_text(size=10),
+                                  legend.justification = "left") +
+                            scale_fill_manual(values = c("#66c2a5", '#fc8d62'), 
+                                              labels = c("More than 15 minutes", "More than 1 hour"), name="Delay Type")
+
+plot_delays_reasons <- ggplot(data=delays_types_by_carrier_prop_long,
+                                 aes(x=carrier_name, y=value, group=variable)) +
+                            geom_bar(aes(fill = variable), colour = "grey", stat="identity", position=position_dodge()) +
+                            xlab("") + ylab("% Total Delays") + ggtitle("Reasons for Delays") +
+                            scale_y_continuous(labels = percent) +
+                            theme(legend.position="bottom",
+                                  panel.background = element_rect(colour = "black", fill="white"),
+                                  panel.grid.major = element_line(colour = "lightgrey"),
+                                  panel.grid.minor = element_line(colour = "lightgrey"),
+                                  text = element_text(size=16),
+                                  axis.text.x = element_text(angle = 60, hjust = 1, size=10),
+                                  axis.text.y = element_text(size=10),
+                                  legend.text = element_text(size=10),
+                                  legend.justification = "left") +
+                            scale_fill_manual(values = c("#66c2a5", '#fc8d62', "#8da0cb", "#4daf4a", "#e78ac3"), 
+                                              labels = c("Carrier", "Weather", "NAS", "Security", "Late Aircraft"), name="Reason")
+
+```
+
+We can distinguish different categories of airlines if we plot the total number of flights against the percentage of flights delayed during the period. Southwest Airlines was by far the airline with the highest number of flights, with more than 3 millions flights, and with a percentage of flights delayed at arrival of 21%. Delta Airlines was the second airline by flight volume and with a lower flight delayed percentage of 14%. American Airlines, Skywest Airlines, Atlantic Southeast Airlines and United Airlines performed similarly in terms of flights volume and delays. Another cluster of regional and low cost airlines, with lower volumes of flights and higher percentages of flights delayed can be visually identified. This group consists of Jetblue Airways, American Eagles Airlines, Frontier Airlines and Spirit Airlines. Spirit Airlines was by far the airline with the worst percentage of flights delayed (29%). The airline with the lowest percentage of flights delayed was Hawaiian Airlines (9.3%).
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_delays_flights
+```
+
+Not all delays are equal; as a passenger it is more annoying to be delayed by 2 hours than by 20 minutes. In the below chart, the percentage of flights delayed was broken down between delays of 15 minutes or more and delays of more than 1 hour. Spirit Airlines has both the highest percentage of flights delayed by 15 minutes or more (29%) and by more than 1 hour (10%).
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_delays_by_carrier_types
+```
+
+When looking at the causes of delays by airline, it is interesting to see that Southwest Airlines has the highest proportion of delays caused by late aircrafts (53% of delays), followed by AirTran Airways Corporation (47%) and Skywest Airlines (45%). These are low-cost and regional airlines which might have a limited fleet size and/ or tight flight schedules.
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_delays_reasons
+```
+
+In the following section, we are going to investigate why Spirit Airlines has such a terrible on-time performance.
+
+**Spirit Airlines** 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+plot_spirit_delays_reasons <- ggplot(data=subset(delays_types_by_carrier_prop_long, carrier_name == "Spirit Air Lines"),
+                                 aes(x=carrier_name, y=value, group=variable)) +
+                            geom_bar(aes(fill = variable), colour = "grey", stat="identity", position=position_dodge()) +
+                            xlab("") + ylab("% Total Delays") + ggtitle("Spirit Airlines - Reasons for Delays") +
+                            scale_y_continuous(labels = percent) +
+                            theme(legend.position="bottom",
+                                  panel.background = element_rect(colour = "black", fill="white"),
+                                  panel.grid.major = element_line(colour = "lightgrey"),
+                                  panel.grid.minor = element_line(colour = "lightgrey"),
+                                  text = element_text(size=16),
+                                  axis.text.x = element_text(size=10),
+                                  axis.text.y = element_text(size=10),
+                                  legend.text = element_text(size=10),
+                                  legend.justification = "left") +
+                            scale_fill_manual(values = c("#66c2a5", '#fc8d62', "#8da0cb", "#4daf4a", "#e78ac3"), 
+                                              labels = c("Carrier", "Weather", "NAS", "Security", "Late Aircraft"), name="Reason")
+
+flights_cancelled_by_carrier_spirit <- subset(flights_cancelled_by_carrier, UniqueCarrier == "NK")
+flights_cancelled_by_carrier_spirit_long <- melt(flights_cancelled_by_carrier_spirit[,c("carrier_name","flights_count","flights_delayed","flights_cancelled","flights_diverted")])
+
+plot_spirit_flight_breakdown <-  ggplot(data=flights_cancelled_by_carrier_spirit_long,
+       aes(x=carrier_name, y=value, group=variable)) +
+  geom_bar(aes(fill = variable), colour = "grey", stat="identity", position=position_dodge()) +
+  xlab("") + ylab("Flights") + ggtitle("Spirit Airlines - Flights Breakdown") +
+  scale_y_continuous(labels = comma) +
+  theme(legend.position="bottom",
+        panel.background = element_rect(colour = "black", fill="white"),
+        panel.grid.major = element_line(colour = "lightgrey"),
+        panel.grid.minor = element_line(colour = "lightgrey"),
+        text = element_text(size=16),
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        legend.text = element_text(size=10),
+        legend.justification = "left") +
+  scale_fill_manual(values = c("#66c2a5", '#fc8d62', "#8da0cb", "#e78ac3"), 
+                    labels = c("All Flights", "Delayed", "Cancelled", "Diverted"), name="Type")
+
+flights_by_month_carrier_spirit <- subset(flights_by_month_carrier,UniqueCarrier == "NK")
+
+plot_flights_by_month_spirit <- ggplot(data=flights_by_month_carrier_spirit,
+                                   aes(x=FlightMONTH, y=flights_count, group=as.factor(FlightYEAR))) +
+                              geom_line(aes(colour = as.factor(FlightYEAR)), size = 1) +
+                              xlab("") + ylab("Flights") + ggtitle("Spirit Airlines - Flights") +
+                              scale_y_continuous(labels = comma) +
+                              scale_x_continuous(breaks=1:12)  +
+                              theme(legend.position="bottom",
+                                    panel.background = element_rect(colour = "black", fill="white"),
+                                    panel.grid.major = element_line(colour = "lightgrey"),
+                                    panel.grid.minor = element_line(colour = "lightgrey"),
+                                    text = element_text(size=16),
+                                    axis.text.x = element_text(size=10),
+                                    axis.text.y = element_text(size=10),
+                                    legend.text = element_text(size=10),
+                                    legend.justification = "left") +
+                              scale_colour_manual(values = c("#66c2a5", '#fc8d62'), 
+                                                labels = c("2015", "2016"), name="Year")
+
+delays_by_path_carr_spirit$path <- factor(delays_by_path_carr_spirit$path, 
+                                          levels = delays_by_path_carr_spirit$path[order(-delays_by_path_carr_spirit$prop_dep_delayed)])
+
+plot_spirit_delayed_path <- ggplot(data=subset(delays_by_path_carr_spirit, flights_count > 1000),
+                                     aes(x=path, y=prop_dep_delayed,order = desc(prop_dep_delayed))) +
+                                geom_bar(fill = "#336699", colour = "grey", stat="identity", position=position_dodge()) +
+                                xlab("") + ylab("% Flights Delayed") + ggtitle("Spirit Airlines - % Flights Delayed by Path") +
+                                scale_y_continuous(labels = percent) +
+                                theme(legend.position="right",
+                                      panel.background = element_rect(colour = "black", fill="white"),
+                                      panel.grid.major = element_line(colour = "lightgrey"),
+                                      panel.grid.minor = element_line(colour = "lightgrey"),
+                                      text = element_text(size=16),
+                                      axis.text.x = element_text(angle = 60, hjust = 1, size=10),
+                                      axis.text.y = element_text(size=10),
+                                      legend.text = element_text(size=10),
+                                      legend.justification = "left")
+
+spirit_delayed_major_paths <- subset(delays_by_path_carr_spirit, flights_count > 1000)[7]
+spirit_delayed_major_paths <- spirit_delayed_major_paths[1][[1]]
+
+plot_spirit_delayed_path_reasons <-  ggplot(data=subset(delays_types_by_path_carr_prop_long,carrier_name == "Spirit Air Lines" & path %in% spirit_delayed_major_paths),
+       aes(x=path, y=value, group=variable)) +
+  geom_bar(aes(fill = variable), colour = "grey", stat="identity", position=position_dodge()) +
+  xlab("") + ylab("% Total Delays") + ggtitle("Spirit Airlines - Reasons for Delays") +
+  scale_y_continuous(labels = percent) +
+  theme(legend.position="bottom",
+        panel.background = element_rect(colour = "black", fill="white"),
+        panel.grid.major = element_line(colour = "lightgrey"),
+        panel.grid.minor = element_line(colour = "lightgrey"),
+        text = element_text(size=16),
+        axis.text.x = element_text(angle = 45, hjust = 1, size=10),
+        axis.text.y = element_text(size=10),
+        legend.text = element_text(size=10),
+        legend.justification = "left") +
+  scale_fill_manual(values = c("#66c2a5", '#fc8d62', "#8da0cb", "#4daf4a", "#e78ac3"), 
+                    labels = c("Carrier", "Weather", "NAS", "Security", "Late Aircraft"), name="Reason")
+
+
+delays_by_carrier_time_spirit <- subset(delays_by_carrier_time,UniqueCarrier == "NK")
+
+delays_by_carrier_time_spirit_long <- melt(delays_by_carrier_time_spirit[,c("FlightHOUR","FlightDOW","prop_arr_delayed")],id=c("FlightDOW","FlightHOUR"))
+
+delays_by_carrier_time_spirit_long2 <- melt(delays_by_carrier_time_spirit[,c("FlightHOUR","FlightDOW","flights_count")],id=c("FlightDOW","FlightHOUR"))
+
+delays_by_carrier_time_spirit_long_final <- merge(x=delays_by_carrier_time_spirit_long,y=delays_by_carrier_time_spirit_long2[,c(1,2,4)],by=c("FlightDOW", "FlightHOUR"))
+names(delays_by_carrier_time_spirit_long_final)[1] <- "Weekday"
+delays_by_carrier_time_spirit_long_final$Weekday <- factor(delays_by_carrier_time_spirit_long_final$Weekday, 
+                              levels = c("Mon","Tues","Wed","Thurs","Fri","Sat","Sun"))
+
+plot_delays_by_time_spirit <- ggplot(data=delays_by_carrier_time_spirit_long_final,
+                                   aes(x=FlightHOUR, y=value.x, group=Weekday, alpha=value.y)) +
+                              geom_line(aes(colour = Weekday), size = 1) +
+                              labs(alpha='Flights Count') +
+                              xlab("Hour") + ylab("% Flights Delayed") + ggtitle("Spirit Airlines - % Flights Delayed") +
+                              scale_y_continuous(labels = percent) +
+                              scale_x_continuous(breaks=0:23)  +
+                              theme(legend.position="right",
+                                    panel.background = element_rect(colour = "black", fill="white"),
+                                    panel.grid.major = element_line(colour = "lightgrey"),
+                                    panel.grid.minor = element_line(colour = "lightgrey"),
+                                    text = element_text(size=16),
+                                    axis.text.x = element_text(size=10),
+                                    axis.text.y = element_text(size=10),
+                                    legend.text = element_text(size=10),
+                                    legend.justification = "left") + 
+  scale_colour_manual(values = c("#66c2a5","#fc8d62", "#8da0cb", "#e78ac3", "#a6d854","#cab2d6","#6a3d9a"), name="Weekday")
+
+delays_by_carrier_time_spirit_long3 <- melt(delays_by_carrier_time_spirit[,c("FlightHOUR","FlightDOW","avg_delay")],id=c("FlightDOW","FlightHOUR"))
+
+delays_by_carrier_time_spirit_long3$FlightDOW <- factor(delays_by_carrier_time_spirit_long3$FlightDOW, 
+                                                        levels = c("Mon","Tues","Wed","Thurs","Fri","Sat","Sun"))
+
+delays_by_carrier_time_spirit_long_final2 <- merge(x=delays_by_carrier_time_spirit_long3,y=delays_by_carrier_time_spirit_long2[,c(1,2,4)],by=c("FlightDOW", "FlightHOUR"))
+names(delays_by_carrier_time_spirit_long_final2)[1] <- "Weekday"
+delays_by_carrier_time_spirit_long_final2$Weekday <- factor(delays_by_carrier_time_spirit_long_final2$Weekday, 
+                              levels = c("Mon","Tues","Wed","Thurs","Fri","Sat","Sun"))
+
+plot_avg_delay_by_time_spirit <- ggplot(data=delays_by_carrier_time_spirit_long_final2,
+                                   aes(x=FlightHOUR, y=value.x, group=Weekday, alpha=value.y)) +
+                              geom_line(aes(colour = Weekday), size = 1) +
+                              labs(alpha='Flights Count') +
+                              xlab("Hour") + ylab("Average Delay (min)") + ggtitle("Spirit Airlines - Average Delay") +
+                              scale_y_continuous(labels = comma) +
+                              scale_x_continuous(breaks=0:23)  +
+                              theme(legend.position="right",
+                                    panel.background = element_rect(colour = "black", fill="white"),
+                                    panel.grid.major = element_line(colour = "lightgrey"),
+                                    panel.grid.minor = element_line(colour = "lightgrey"),
+                                    text = element_text(size=16),
+                                    axis.text.x = element_text(size=10),
+                                    axis.text.y = element_text(size=10),
+                                    legend.text = element_text(size=10),
+                                    legend.justification = "left") + 
+  scale_colour_manual(values = c("#66c2a5","#fc8d62", "#8da0cb", "#e78ac3", "#a6d854","#cab2d6","#6a3d9a"), name="Weekday")
+
+
+flights_map <- merge(x=flights_paths,y=airports_data[,c(1,6,7)],by.x="Origin",by.y="iata")
+names(flights_map)[9] <- "start_lat"
+names(flights_map)[10] <- "start_long"
+flights_map <- merge(x=flights_map,y=airports_data[,c(1,6,7)],by.x="Dest",by.y="iata")
+names(flights_map)[11] <- "end_lat"
+names(flights_map)[12] <- "end_long"
+flights_map <- flights_map[,c(4,6:12)]
+
+flights_paths_carr_spirit <- subset(flights_paths_carr,UniqueCarrier == "NK")
+
+flights_map_spirit <- merge(flights_map,flights_paths_carr_spirit[,c("path","flights_count")],by="path")
+
+flights_map_spirit2 <- data.frame(group = flights_map_spirit$path,
+                                  lat = c(flights_map_spirit$start_lat, flights_map_spirit$end_lat),
+                                  long = c(flights_map_spirit$start_long, flights_map_spirit$end_long))
+```
+
+Spirit Airlines is the worst performing airline in terms of flights delayed. As it can be seen from the below flights map, Spirit Airlines operates nationally. 
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+leaflet() %>% addProviderTiles("CartoDB.Positron",options = c(providerTileOptions(opacity = 0.8),tileOptions(minZoom=4, maxZoom=4))) %>%
+  setView(lng = -95, lat = 35,  zoom = 4) %>% 
+  addPolylines(data = flights_map_spirit2, 
+               lng = ~long, lat = ~lat, group = ~group, 
+               weight = 2, color = "#336699", fillOpacity = 0.4)
+```
+
+Spirit Airlines is a fast growing low-cost airline which has only started reporting on its on-time performance at the start of 2015.
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_flights_by_month_spirit
+```
+
+Spirit Airlines does not seem however to have handled well its growth: out of the 184,904 flights that Spirit Airlines operated during the period, 70,152 flights were delayed (38%), 3,517 cancelled (2%) and 281 diverted (< 1%).
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_spirit_flight_breakdown
+```
+
+When looking at the percentage of flights delayed against the time, a similar trend as the one noticed before can be observed: flights in the evening are more likely to get delayed as delays accumulate - flights departing at 9pm on Fridays are delayed in 43% of the time!  
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_delays_by_time_spirit
+```
+
+It is also interesting to see how the average delay increases as the day goes by. On Thursdays at 7pm, the average delay reaches 85 minutes!
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_avg_delay_by_time_spirit
+```
+
+When looking at the reasons for delays for Spirit Airlines, late aircraft (30%) is the second reason after NAS (47%). This might be due to Spirit Airlines operating on a flight schedule that is too tight. In fact, in a recent [article](http://www.forbes.com/sites/tedreed/2016/05/21/spirit-airlines-on-time-arrival-rate-is-bad-partly-because-spirit-doesnt-pad-its-schedule/2/#16873a7d5694) a Spirit spokesman mentioned that Spirit Airlines has *"an extremely tight schedule compared to the rest of the industry. If things like weather or airport issues, things that are out of our control, come up, that can cause delays."*. Spirit Airlines has a network approach, rather than a hub approach and doesn't have the capacity to cancel flights - their daily aircraft utilization is between 13 and 14 hours, while the three global airlines' daily aircraft utilization is closer to 10 or 11 hours. This tight time schedule is however what allows Spirit Airlines to keep low fares. 
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_spirit_delays_reasons
+```
+
+Some paths operated by Spirit Airlines tend to be more often delayed and the departure and arrival airports, as seen previously, have a important impact on the delays. It is therefore not surprising that the route that is the most often delayed is the Chicago O'Hare International to Dallas-Fort Worth International (36% of flights delayed with an average delay of 52 minutes), followed by Chicago O'Hare International to Minneapolis-St Paul International (35% delayed with an average delay of 58 minutes) and by Chicago O'Hare International to Los Angeles International (35% delayed with an average delay of 60 minutes).
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_spirit_delayed_path
+```
+
+In the case of the Chicago O'Hare International to Dallas-Fort Worth International path, a NAS related delay was the reason is 43% of the cases, a late aircraft in 30% of the cases, a carrier delay in 22% of the cases and extreme weather was the cause of the delay in 5% of the cases.
+
+```{r, echo=FALSE, fig.width=8, fig.height=6}
+plot_spirit_delayed_path_reasons
+```
+
+The management of Spirit Airlines should really take action by giving more margins for unexpected issues as the airline's poor on-time performance is having a toll on customers' satisfaction as it can be seen from the image below from the [Skytrax website](http://www.airlinequality.com/airline-reviews/spirit-airlines/). 
+
+![](./spirit_reviews.png) 
+
+Conclusions and Recommendations
+-------------------------------
+The time, the departure and arrival airports, the weather conditions and the choice of airline are factors that influence the probability of a flight being on time. As we have seen in this analysis, Spirit Airlines was the worst performing carrier in terms of delays. The main reason behind Spirit Airlines' poor performance seems to be it's very tight flight schedule which doesn't allow any flexibility for unexpected events, especially when flying in/out of airports that are notorious for having delays.  
+
+The BTS dataset is very rich and, if I had more time to work on this project, I would have done some further analysis to better understand what are the main reasons behind delays:
+
+* The impact of weather is hard to assess just from this dataset, as both NAS and Weather are reason codes that include bad weather conditions. A breakdown of the NAS delays should be merged with this dataset to better assess the impact of bad weather conditions on flight delays. Furthermore some meteorological factors like the jet stream can have an impact on flights delays and need to be taken into account.
+* Furthermore hourly historical weather data can be merged to this data to build a model to predict whether or not a flight will be delayed.
+* Some airlines are known for padding their flight times by a few minutes to avoid having to report delays. Flight times should therefore be adjusted for padding to create a level playing field. 
+
+
+
+
